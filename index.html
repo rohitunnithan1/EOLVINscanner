@@ -242,16 +242,19 @@
       flashCard();
       setStatus('Syncing…', false);
 
-      // ── Confirm with server in background ──
-      try {
-        const res  = await fetch(`${API_URL}?action=logScan&vin=${encodeURIComponent(vin)}`);
-        const data = await res.json();
-        // Reconcile with server truth (in case of duplicates or clock drift)
-        lastVinEl.textContent = data.lastVin   || vin.toUpperCase();
-        countEl.textContent   = data.todayCount ?? (prevCount + 1);
+      // ── Confirm with server in background (auto-retry up to 3x) ──
+      const saved = await logWithRetry(vin, 3, 1000);
+      if (saved && saved.duplicate) {
+        // Duplicate — roll back optimistic update
+        lastVinEl.textContent = prevVin;
+        countEl.textContent   = prevCount;
+        setStatus('⚠ Duplicate VIN — already scanned today', true);
+      } else if (saved) {
+        lastVinEl.textContent = saved.lastVin   || vin.toUpperCase();
+        countEl.textContent   = saved.todayCount ?? (prevCount + 1);
         setStatus('✓ Logged', false);
-      } catch (err) {
-        // Server failed — roll back optimistic update
+      } else {
+        // All retries failed — roll back
         lastVinEl.textContent = prevVin;
         countEl.textContent   = prevCount;
         setStatus('Error — not saved', true);
@@ -278,6 +281,22 @@
         vinInput.focus();
       }
     });
+
+    // ── RETRY HELPER ────────────────────────────────────────────────────────────
+    async function logWithRetry(vin, retries, delayMs) {
+      for (let i = 0; i < retries; i++) {
+        try {
+          const res = await fetch(`${API_URL}?action=logScan&vin=${encodeURIComponent(vin)}`);
+          const data = await res.json();
+          return data; // success
+        } catch (_) {
+          if (i < retries - 1) await sleep(delayMs);
+        }
+      }
+      return null; // all retries failed
+    }
+
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
     // ── CSV DOWNLOAD ────────────────────────────────────────────────────────────
     async function downloadCSV() {
